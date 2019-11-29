@@ -1,0 +1,563 @@
+---
+title: "CDW Practical Machine Learning Project"
+author: "Charles Warden"
+date: "11/28/2019"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+
+I believe these are the most important messages from this project:
+
+- A split of training data into 60% training and 40% test data gave more realistic estimates of accuracy than cross-validation (and this may/probably be true for other datasets as well)
+
+- For this project (and this analysis strategy), a "good" predictive method often has an accuracy closer to 70% (rather than 100%) in an independent test dataset.  However, even 50% accuracy is more than you expect by chance, with 5 categories.
+
+# Exploratory Analysis
+
+This was not specifically requested, but I wanted to get a feel for the data before starting analysis.
+
+### Figure 1: PCA Plots with Missing Values Omitted
+
+```{r pca, echo=FALSE, out.width = "50%"}
+train.table = read.csv("pml-training.csv", head=T)
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+subject = as.factor(train.table$user_name[as.numeric(rownames(full.table))])
+
+#code modified from https://github.com/cwarden45/RNAseq_templates/blob/master/TopHat_Workflow/qc.R
+
+pca.table = t(full.table)
+pca.values = prcomp(pca.table)
+pc.values = data.frame(pca.values$rotation)
+#print(dim(pc.values))
+
+par(mfcol=c(1,2))
+
+#plot class
+groups = levels(as.factor(as.character(category)))
+num.sample.types = length(groups)
+color.palette = rainbow(num.sample.types)
+
+labelColors = rep("black",times=ncol(full.table))
+for (i in 1:length(groups)){
+		labelColors[category == as.character(groups[i])] = color.palette[i]
+}#end for (i in 1:length(groups))
+
+plot(pc.values$PC1, pc.values$PC2, col = labelColors, xlab = "PC1",
+			ylab = "PC2", pch=19, main = "Class")
+legend("bottomright",legend=groups,col=color.palette,  pch=19, cex=0.5)
+
+#plot individual
+groups = levels(as.factor(as.character(subject)))
+num.sample.types = length(groups)
+color.palette = rainbow(num.sample.types)
+
+labelColors = rep("black",times=ncol(full.table))
+for (i in 1:length(groups)){
+		labelColors[subject == as.character(groups[i])] = color.palette[i]
+}#end for (i in 1:length(groups))
+
+plot(pc.values$PC1, pc.values$PC2, col = labelColors, xlab = "PC1",
+			ylab = "PC2", pch=19, main = "Student")
+legend("bottomright",legend=groups,col=color.palette,  pch=19, cex=0.5)
+
+
+```
+
+There were 38 variables for each of the 'belt', 'forearm', 'arm', and 'dumbbell' measurements (for a total of 152 maximum possible predictor variables).  The starting number of measurement was measurement count (each of which has more than one predictor to build a model from) was 406.
+
+From this, I have the following observations:
+
+**1)** There is noticable variation from the user (on PC2, we see this most clearly for Eurico)
+
+**2)** I would guess that I need to *i)* filter features that better explain 'classe' class (over 'user_name' for student) and/or *ii)* include the individual in the prediction model.
+
+# Cross-Validation
+
+In the  `caret` package, I used the *trainControl()* function to perform cross-validation.  This should be done before feature selection (and creating a new model), but I am not actually sure how this is implemented in this package.
+
+I think this may not be the best solution, but I will describe estimates with a 60-40 train-test dataset later.
+
+So, for all 3 models below, you should assume that I filled in the *trControl* parameter and performed 10-fold cross-validation.  Random Forest predictions were made with "method = "rf", Boosting predictions were made with method = "gbm", and Linear Discriminant Analysis (LDA) predictions were made with method = "lda".
+
+# Model Testing
+
+While there are statistical tests that can be used for feature selection, I will try to focus on what I have learned in this class (using the "Variable Importance" measures, calculated by the varImp() function in the `caret` package for Random Forest and Boosting with "gbm", as well as the maximum coefficient from `abs(modLDA$finalModel$scaling)` for Linear Discriminant Analysis).
+
+In other words, I first tested a few of the methods that we discussed in this class.  I report the ***training*** accuracy below, and I will then test re-creating the PCA plots with a filtered set of variables (as well as re-calculating accuracy).
+
+Additionally, I got an error message related to low variance for some predictors.  So, I reduced the starting set of predictors from **152** to **146** (by requiring variance > 1e-7).  I also set the random seed to 0.  However, I also then decided to skip regular linear regression and LASSO regression (since I am trying to predict a categorical variable).
+
+**1)** `caret` Random Forest (***Estimated* 100.0% Accuracy**, method = "rf")
+
+**2)** `caret` Boosting (***Estimated* 100.0% Accuracy**, method = "gbm")
+
+**3)** `caret` Linear Discriminant Analysis (***Estimated* 77.3% Accuracy**, method = "lda" --> previously estimated to have *96.1% Accuracy* with more features)
+
+### Figure 2: Variable Importance Measures
+
+```{r varImp, echo=FALSE}
+options(warn=-1)
+set.seed(0)
+train.table = read.csv("pml-training.csv", head=T)
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+subject = as.factor(train.table$user_name[as.numeric(rownames(full.table))])
+
+#print(dim(full.table))
+predictor_variance = apply(full.table, 2, var)
+full.table = full.table[, predictor_variance > 1e-7]
+#print(dim(full.table))
+
+library(caret)
+training = data.frame(category, subject, full.table)
+print(dim(full.table))
+train_control = trainControl(method="cv", number=10)
+
+#Random Forest
+modRF = train(category ~ ., data=training, method="rf", trControl=train_control, verbose=F)
+varImpRF = varImp(modRF)$importance
+predRF = predict(modRF, training)
+#print(confusionMatrix(category, predRF))
+
+#LDA
+modLDA = train(category ~ ., data=training, method="lda", trControl=train_control, verbose=F)
+LDA.mat = abs(modLDA$finalModel$scaling)
+LDA.max = apply(LDA.mat, 1, max)
+
+predLDA = predict(modLDA, training)
+#print(confusionMatrix(category, predLDA))
+
+#Boosting
+library("gbm")
+library(caret)
+modB = train(category ~ ., data=training, method="gbm", trControl=train_control, verbose=F)
+varImpB = varImp(modB)$importance
+predB = predict(modB, training)
+#print(confusionMatrix(category, predB))
+
+#NeuralNetwork (method="nnet") --> noticably lower accuracy (0.3177)
+
+##SVM --> skip to avoid importance calculation
+#library(e1071)
+#modSVM = svm(category~., data=training)
+#predSVM = predict(modSVM, trainingSVM)
+  
+importance_table = data.frame(RandomForest=varImpRF$Overall,
+                              Boosting=varImpB$Overall[match(rownames(varImpRF), rownames(varImpB))],
+                              LDA=LDA.max[match(rownames(varImpRF), names(LDA.max))])
+rownames(importance_table)=rownames(varImpRF)
+importance_table = importance_table[order(apply(importance_table,1,mean), decreasing=T), ]
+featureSum = apply(importance_table, 1, sum)
+barplot(as.matrix(t(importance_table)), las=2, cex.names=0.35, col=rainbow(3))
+abline(h=25)
+legend("topright", legend=c("Random Forest", "Boosting", "LDA"), col=rainbow(3), pch=15)
+
+importance_table = importance_table[featureSum > 25,]
+write.table(importance_table, "variable_importance-all.txt")
+options(warn=0)
+```
+
+The plot above arguably doesn't show as much benefit to feature selection (but I believe there was an earlier plot with more features where the threshold of a sum of 25 was more meaningful, even though the units being summed are different for each method).
+
+I also suppressed warnings when training the LDA model, using the strategy described [here](https://stackoverflow.com/questions/16194212/how-to-suppress-warnings-globally-in-an-r-script).
+
+However, if you filter more variables, this appears to make the feature selection even less relevant (and I have noted the considerable loss of LDA accuracy above):
+
+### Figure 3: Variable Importance Measures (without missing values in the TEST data set)
+
+```{r varImp-WITH-TEST, echo=FALSE}
+set.seed(0)
+train.table = read.csv("pml-training.csv", head=T)
+
+test.table = read.csv("pml-testing.csv", head=T)
+test.table = na.omit(data.matrix(t(test.table)))
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+full.table = full.table[,match(c(rownames(test.table),"classe"),colnames(full.table), nomatch=0)]
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+subject = as.factor(train.table$user_name[as.numeric(rownames(full.table))])
+
+#print(dim(full.table))
+predictor_variance = apply(full.table, 2, var)
+full.table = full.table[, predictor_variance > 1e-7]
+#print(dim(full.table))
+
+library(caret)
+training = data.frame(category, subject, full.table)
+train_control = trainControl(method="cv", number=10)
+
+#Random Forest
+modRF = train(category ~ ., data=training, method="rf", trControl=train_control, verbose=F)
+varImpRF = varImp(modRF)$importance
+predRF = predict(modRF, training)
+#print(confusionMatrix(category, predRF))
+
+#LDA
+modLDA = train(category ~ ., data=training, method="lda", trControl=train_control, verbose=F)
+LDA.mat = abs(modLDA$finalModel$scaling)
+LDA.max = apply(LDA.mat, 1, max)
+
+predLDA = predict(modLDA, training)
+#print(confusionMatrix(category, predLDA))
+
+#Boosting
+library("gbm")
+modB = train(category ~ ., data=training, method="gbm", trControl=train_control, verbose=F)
+varImpB = varImp(modB)$importance
+predB = predict(modB, training)
+#print(confusionMatrix(category, predB))
+
+#NeuralNetwork (method="nnet") --> noticably lower accuracy (0.3177)
+
+##SVM --> skip to avoid importance calculation
+#library(e1071)
+#modSVM = svm(category~., data=training)
+#predSVM = predict(modSVM, trainingSVM)
+  
+importance_table = data.frame(RandomForest=varImpRF$Overall,
+                              Boosting=varImpB$Overall[match(rownames(varImpRF), rownames(varImpB))],
+                              LDA=LDA.max[match(rownames(varImpRF), names(LDA.max))])
+rownames(importance_table)=rownames(varImpRF)
+importance_table = importance_table[order(apply(importance_table,1,mean), decreasing=T), ]
+featureSum = apply(importance_table, 1, sum)
+barplot(as.matrix(t(importance_table)), las=2, cex.names=0.35, col=rainbow(3))
+abline(h=25)
+legend("topright", legend=c("Random Forest", "Boosting", "LDA"), col=rainbow(3), pch=15)
+
+importance_table = importance_table[featureSum > 25,]
+write.table(importance_table, "variable_importance.txt")
+
+```
+
+If I re-create the PCA plots with the filtered set of features, it now looks like this:
+
+### Figure 4: PCA with Filtered Features
+
+```{r pca2, echo=FALSE, out.width = "50%"}
+train.table = read.csv("pml-training.csv", head=T)
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+test.table = read.csv("pml-testing.csv", head=T)
+test.table = na.omit(data.matrix(t(test.table)))
+
+full.table = full.table[,match(c(rownames(test.table),"classe"),colnames(full.table), nomatch=0)]
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+subject = as.factor(train.table$user_name[as.numeric(rownames(full.table))])
+
+#code modified from https://github.com/cwarden45/RNAseq_templates/blob/master/TopHat_Workflow/qc.R
+
+pca.table = t(full.table)
+pca.values = prcomp(pca.table)
+pc.values = data.frame(pca.values$rotation)
+#print(dim(pc.values))
+
+par(mfcol=c(1,2))
+
+#plot class
+groups = levels(as.factor(as.character(category)))
+num.sample.types = length(groups)
+color.palette = rainbow(num.sample.types)
+
+labelColors = rep("black",times=ncol(full.table))
+for (i in 1:length(groups)){
+		labelColors[category == as.character(groups[i])] = color.palette[i]
+}#end for (i in 1:length(groups))
+
+plot(pc.values$PC1, pc.values$PC2, col = labelColors, xlab = "PC1",
+			ylab = "PC2", pch=19, main = "Class")
+legend("topright",legend=groups,col=color.palette,  pch=19, cex=0.5)
+
+#plot individual
+groups = levels(as.factor(as.character(subject)))
+num.sample.types = length(groups)
+color.palette = rainbow(num.sample.types)
+
+labelColors = rep("black",times=ncol(full.table))
+for (i in 1:length(groups)){
+		labelColors[subject == as.character(groups[i])] = color.palette[i]
+}#end for (i in 1:length(groups))
+
+plot(pc.values$PC1, pc.values$PC2, col = labelColors, xlab = "PC1",
+			ylab = "PC2", pch=19, main = "Student")
+legend("topright",legend=groups,col=color.palette,  pch=19, cex=0.5)
+
+
+```
+
+The student effect still seems larger than the class effect, but I think it was worth seeing if this might have provided a visualiziation to show benefit to feature selection.  If the drop in LDA accuracy was accurate, **maybe this is actually shows *little or no benefit* to the additional variable filtering** (although you have to have features present in the test data, or impute missing values).
+
+Additionally, there were some predictors with missing values in the test dataset.  So, if I filter the variables for those present in the test dataset, then the starting number of predictors becomes **53** (including the categorical "user_name" for the student name).  Interestingly, I have to be careful about the order - if I filter the missing test samples first, then I keep a lot more training samples.  If I don't do that, then the run-time considerably increases.  Plus, this means we are theoretically expecting a model with high estimated accuracy with ~2% of the measurements (406/19622), **with a considerably shorter run-time**.
+
+If I then use the filtered set of 53 variables (condensing all "subject" variables into 1 for "user_name"), these are the estimated training accuracies:
+
+```{r filteredModel, echo=FALSE}
+set.seed(0)
+train.table = read.csv("pml-training.csv", head=T)
+test.table = read.csv("pml-testing.csv", head=T)
+
+importance_table = read.table("variable_importance.txt")
+
+kept_vars = rownames(importance_table)
+kept_vars = kept_vars[-grep("subject",kept_vars)]
+kept_vars = c("user_name",kept_vars)
+#print(length(kept_vars))
+
+test.table.ALT = na.omit(data.matrix(t(test.table)))
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+full.table = full.table[,match(c(rownames(test.table.ALT),"classe"),colnames(full.table), nomatch=0)]
+
+#test.table$user_name = factor(test.table$user_name,
+#                              levels=levels(full.table$user_name))
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+
+library(caret)
+training = data.frame(category, full.table)
+train_control = trainControl(method="cv", number=10)
+
+##Random Forest
+modRF = train(category ~ ., data=training, method="rf", trControl=train_control)
+predRF = predict(modRF, training)
+#print(confusionMatrix(category, predRF))
+predRF = predict(modRF, test.table)
+
+##LDA
+modLDA = train(category ~ ., data=training, method="lda", trControl=train_control)
+predLDA = predict(modLDA, training)
+#print(confusionMatrix(category, predLDA))
+predLDA = predict(modLDA, test.table)
+
+##Boosting
+modB = train(category ~ ., data=training, method="gbm", trControl=train_control, verbose=F)
+predB = predict(modB, training)
+#print(confusionMatrix(category, predB))
+predB = predict(modB, test.table)
+
+output.table = data.frame(quiz_id = test.table$problem_id,
+                          predRF, predLDA, predB)
+write.table(output.table,"filtered_model_predictions.txt", sep="\t")
+
+```
+
+**1)** `caret` Random Forest (***Estimated* 100% Accuracy**, method = "rf")
+
+**2)** `caret` Boosting (***Estimated* 100% Accuracy**, method = "gbm")
+
+**3)** `caret` Linear Discriminant Analysis (***Estimated* 75.1% Accuracy**, method = "lda")
+
+Since one model had an estimated accuracy of 100%, I decided to skip creating a combined predictor.
+
+Strictly speaking, I am assuming estimated accuracy will decrease on the training set (when I reduce the number of features).  However, if I simplify the model, I hope the accuracy in independent validation data sets can increase.  However, both estimated accuracies with cross-validation in the training set were similar.
+
+# Course Project Prediction Quiz (Preliminary Result)
+
+I noticed that the final quiz is a grade for accuracy of the model.  I understand that this is supposed to be a dataset that you cannot test prior to locking-down a model (to avoid over-fitting, and reduced reproducilbity in truely independent datasets).  However, *I would also usually consider a model with 100% accuracy to be suspicious* (and I was therefore expecting to lose points in that section).
+
+If I don't pick a single model, I can use the output from 3 models to compare predictions (and assess the accuracy in the test dataset), then the predictions are accurate for 7 / 8  measurements (out-of-sample error at **87.5%**, *but* 12 samples would have unknown samples and *60%* of samples with uncertain assignments may or may not be acceptable)
+
+If I fill in all the results for a given method I have the following results:
+
+**1)** `caret` Random Forest (**75% Accuracy (15/20)**, method = "rf")
+
+**2)** `caret` Boosting (**80% Accuracy (16/20)**, method = "gbm")
+
+**3)** `caret` Linear Discriminant Analysis (**50% Accuracy (10/20)**, method = "lda")
+
+Even though I was able to figure out the status for **18/20** measurements (being right for at least one model), I was really supposed to just pick one method.  So, I uploaded the set of answers with a **majority vote** (or leaving the prediction blank), which resulted in a grade of 80% (for **16/20** measurements).  So, in the interests of honesty, I did not continue re-taking the quiz to get a higher percentage in the course.
+
+To be fair, it is a bit of a stretch to connect the stategies.  However, this is *might* be similar to what I believe needs to be done for RNA-Seq gene expression (based upon personal experience, as well as benchmarks calculated [here](https://sourceforge.net/projects/rnaseq-deg-methodlimit/)), if you could view all models and use personal judgement from experience when something was ambiguous (or didn't seem right).
+
+Either way, the estimated accuracy was considerably higher than the true accuracy.  So, my point about the considerably reduced run-time may not be valid.  **However, I was right to question an estimated accuracy of 100%**.
+
+# Additional Estimation with 60-40 Training-Test Dataset
+
+### Figure 5: Summary of Accuracy
+
+```{r summary, echo=FALSE}
+set.seed(0)
+train.table = read.csv("pml-training.csv", head=T)
+test.table = read.csv("pml-testing.csv", head=T)
+
+importance_table = read.table("variable_importance.txt")
+
+kept_vars = rownames(importance_table)
+kept_vars = kept_vars[-grep("subject",kept_vars)]
+kept_vars = c("user_name",kept_vars)
+#print(length(kept_vars))
+
+test.table.ALT = na.omit(data.matrix(t(test.table)))
+
+belt.table = train.table[,grep("belt",names(train.table))]
+#print(paste("'belt' variables: ",ncol(belt.table),sep=""))
+forearm.table = train.table[,grep("forearm",names(train.table))]
+#print(paste("'forearm' variables: ",ncol(forearm.table),sep=""))
+arm.table = train.table[,grep("_arm",names(train.table))]
+#print(paste("'arm' variables: ",ncol(arm.table),sep=""))
+dumbbell.table = train.table[,grep("dumbbell",names(train.table))]
+#print(paste("'dumbbell' variables: ",ncol(dumbbell.table),sep=""))
+
+full.table = data.frame(belt.table, forearm.table, arm.table, 
+                        dumbbell.table)
+rownames(full.table)=1:nrow(full.table)
+#print(paste("Starting Samples: ",nrow(full.table),sep=""))
+full.table = na.omit(data.matrix(full.table))
+#print(paste("Filtering Samples with Missing Values: ",nrow(full.table),sep=""))
+#print(head(full.table))
+
+full.table = full.table[,match(c(rownames(test.table.ALT),"classe"),colnames(full.table), nomatch=0)]
+
+#test.table$user_name = factor(test.table$user_name,
+#                              levels=levels(full.table$user_name))
+
+category = as.factor(train.table$classe[as.numeric(rownames(full.table))])
+
+library(caret)
+inTrain = createDataPartition(category, p = 0.6)[[1]]
+caret.start = data.frame(category, full.table)
+training = caret.start[inTrain,]
+testing = caret.start[-inTrain,]
+train_control = trainControl(method="cv", number=10)
+
+##Random Forest
+modRF = train(category ~ ., data=training, method="rf", trControl=train_control)
+predRF = predict(modRF, testing)
+#print(confusionMatrix(testing$category, predRF))
+
+##LDA
+modLDA = train(category ~ ., data=training, method="lda", trControl=train_control)
+predLDA = predict(modLDA, testing)
+#print(confusionMatrix(testing$category, predLDA))
+
+##Boosting
+modB = train(category ~ ., data=training, method="gbm", trControl=train_control, verbose=F)
+predB = predict(modB, testing)
+#print(confusionMatrix(testing$category, predB))
+
+
+### Summary Boxplot
+summary_table = data.frame(RandomForest=c(100,100,75,66.9),
+                           Boosting=c(100,100,80,58.1),
+                           LDA=c(77.3,75.1,50,55.6))
+rownames(summary_table)=c("CV1","CV2","Quiz","T60_T40")
+par(mar=c(5,5,10,3))
+legend_col = c("gray40","gray60","red","cornflowerblue")
+barplot(as.matrix(summary_table), ylab="Accuracy",
+        col=legend_col, beside=T, ylim=c(0,100))
+legend("top", legend = rownames(summary_table),
+       col=legend_col, pch=15, cex=0.5,
+       xpd=T, inset=-0.15, ncol=4)
+```
+
+**CV1** is cross validation with all features (among samples without any missing values).  **CV2** is cross-validation with a filtered set of features.  The "**Quiz**" accuracy is the separate set of 20 measurements used for the quiz grade, and the "**T60_T40**" is the accuracy estimated on the 40% test samples from the 60% training samples (all in the "training" dataset, added for this section).
+
+The order is perhaps a little confusing in that a training sample estimation comes before the separate "quiz" test set (since I want to re-emphasize the predicted accuracy from cross validation was **too high**).  So, the red bar is the more realistic accuracy, and I was testing is the 60-40 split could yield a more accurate estimation.  **This matches what is described in the lecture, in terms of a 60-40 split being a preferable option to cross-validation**.  I believe this also matches my experience in terms of preferring validation in large independent cohorts (*rather than with cross-validation*).
+
+# Discussion of Limitations / Errors
+
+From this project, I would expect that individual variability can introduce a considerable challenge.  Also, I think having a test set with 20 measurements may have also not been ideal (since I would expect more variability in accuracy estimates with smaller sample sizes).
+
+I have a Fitbit, and this matches my own experience with limitations in the predictive power.  For example, it was able to tell 1 time that I was on the elliptical, but it never recognized my spin class as "exercise" (although I could see noticable increases in my heart rate).  The accuracy of the model for sleep also seemed to considerably vary over time (which I guessed was due to defining different models, but I can't really say that for certain).
+
+If it is not always safe to assume newer models will work better (which I would say roughly matches my experience), then this could be very important in terms of saving previous models and providing semi-automated results (where the users can choose earlier models, if they think something looks very wrong with the most recent model provided by a company).
+
+# Formatting requirements
+
+As requested in the "Reproducibility" section of the assignment, I am not posting the R markdown code.  This is somewhat contradictory to the requirement of "Github repo with your R markdown and compiled HTML file describing your analysis", but I hope the HTML alone is OK (otherwise, the R markdown includes the code).  I used [this discussion](https://stackoverflow.com/questions/8446218/how-to-see-an-html-page-on-github-as-a-normal-rendered-html-page-to-see-preview/8446391) to learn more about creating a link to view a formated webpage from GitHub (rather than the GitHub HTML source code).
+
+However, the peer-grading metric **requires** the .Rmd code to be uploaded.  So, I have added that as well (but I think the part about "*security concerns*" needs to be removed from the project instructions).
+
+Based upon an compiled Word document, this report has 1,795 words.
